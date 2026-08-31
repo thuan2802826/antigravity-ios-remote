@@ -1,5 +1,7 @@
 ﻿import SwiftUI
 import WebKit
+import AVFoundation
+import Speech
 
 @main
 struct AntigravityRemoteApp: App {
@@ -11,24 +13,138 @@ struct AntigravityRemoteApp: App {
     }
 }
 
+// MARK: - Audio Recorder & Speech Helper
+class VoiceSpeechManager: NSObject, ObservableObject, AVAudioRecorderDelegate {
+    @Published var isRecording = false
+    @Published var recognizedText = ""
+    @Published var showVoiceSheet = false
+    
+    private var audioRecorder: AVAudioRecorder?
+    private var speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "vi-VN")) ?? SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
+    private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var recognitionTask: SFSpeechRecognitionTask?
+    private let audioEngine = AVAudioEngine()
+    
+    func requestPermissions() {
+        AVAudioSession.sharedInstance().requestRecordPermission { granted in
+            DispatchQueue.main.async {
+                print("Mic permission: \(granted)")
+            }
+        }
+        SFSpeechRecognizer.requestAuthorization { status in
+            DispatchQueue.main.async {
+                print("Speech recognition status: \(status.rawValue)")
+            }
+        }
+    }
+    
+    func startSpeechToText(onUpdate: @escaping (String) -> Void) {
+        requestPermissions()
+        
+        let audioSession = AVAudioSession.sharedInstance()
+        do {
+            try audioSession.setCategory(.playAndRecord, mode: .measurement, options: .defaultToSpeaker)
+            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+        } catch {
+            print("Failed to setup audio session: \(error)")
+            return
+        }
+        
+        recognitionRequest = SFSpeechAudioBufferRecognitionRequest()
+        guard let recognitionRequest = recognitionRequest else { return }
+        recognitionRequest.shouldReportPartialResults = true
+        
+        let inputNode = audioEngine.inputNode
+        
+        recognitionTask = speechRecognizer?.recognitionTask(with: recognitionRequest) { result, error in
+            if let result = result {
+                DispatchQueue.main.async {
+                    let text = result.bestTranscription.formattedString
+                    self.recognizedText = text
+                    onUpdate(text)
+                }
+            }
+            if error != nil || (result?.isFinal ?? false) {
+                self.stopSpeechToText()
+            }
+        }
+        
+        let recordingFormat = inputNode.outputFormat(forBus: 0)
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
+            self.recognitionRequest?.append(buffer)
+        }
+        
+        do {
+            try audioEngine.start()
+            isRecording = true
+        } catch {
+            print("Audio engine start error: \(error)")
+        }
+    }
+    
+    func stopSpeechToText() {
+        audioEngine.stop()
+        audioEngine.inputNode.removeTap(onBus: 0)
+        recognitionRequest?.endAudio()
+        recognitionRequest = nil
+        recognitionTask?.cancel()
+        recognitionTask = nil
+        isRecording = false
+    }
+}
+
 struct ContentView: View {
-    @State private var targetURL = "https://antigravity.google.com.com"
+    @State private var targetURL = "https://antigravity.google.com"
     @State private var isShowingSettings = false
     @State private var keepScreenAwake = true
+    @StateObject private var voiceManager = VoiceSpeechManager()
+    @State private var webViewCoordinator: OptimizedWebView.Coordinator?
     
     var body: some View {
         ZStack(alignment: .bottomTrailing) {
-            OptimizedWebView(urlString: targetURL)
-                .edgesIgnoringSafeArea(.all)
+            OptimizedWebView(urlString: targetURL, onCoordinatorReady: { coord in
+                self.webViewCoordinator = coord
+            })
+            .edgesIgnoringSafeArea(.all)
             
-            // Floating Quick Action Button
-            VStack {
+            // Floating Control Bar (Voice Mic + Settings)
+            VStack(spacing: 12) {
                 Spacer()
-                HStack {
+                HStack(spacing: 12) {
                     Spacer()
+                    
+                    // Voice Mic Button
+                    Button(action: {
+                        let generator = UIImpactFeedbackGenerator(style: .heavy)
+                        generator.impactOccurred()
+                        
+                        if voiceManager.isRecording {
+                            voiceManager.stopSpeechToText()
+                        } else {
+                            voiceManager.showVoiceSheet = true
+                        }
+                    }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: voiceManager.isRecording ? "waveform.circle.fill" : "mic.fill")
+                                .font(.system(size: 18, weight: .bold))
+                                .foregroundColor(.white)
+                            if voiceManager.isRecording {
+                                Text("Đang nghe...")
+                                    .font(.system(size: 14, weight: .semibold))
+                                    .foregroundColor(.white)
+                            }
+                        }
+                        .padding(14)
+                        .background(
+                            Capsule()
+                                .fill(voiceManager.isRecording ? Color.red : Color.blue)
+                                .shadow(color: .black.opacity(0.3), radius: 6, x: 0, y: 3)
+                        )
+                    }
+                    
+                    // Settings Button
                     Button(action: {
                         let generator = UIImpactFeedbackGenerator(style: .medium)
-                        generator.prepare()
                         generator.impactOccurred()
                         isShowingSettings.toggle()
                     }) {
@@ -46,13 +162,19 @@ struct ContentView: View {
                                     .shadow(color: .black.opacity(0.3), radius: 6, x: 0, y: 3)
                             )
                     }
-                    .padding(.trailing, 16)
-                    .padding(.bottom, 24)
                 }
+                .padding(.trailing, 16)
+                .padding(.bottom, 24)
             }
         }
         .onAppear {
             UIApplication.shared.isIdleTimerDisabled = keepScreenAwake
+            voiceManager.requestPermissions()
+        }
+        .sheet(isPresented: $voiceManager.showVoiceSheet) {
+            VoiceInputModal(voiceManager: voiceManager) { spokenText in
+                webViewCoordinator?.injectPromptToChat(spokenText)
+            }
         }
         .sheet(isPresented: $isShowingSettings) {
             SettingsView(targetURL: $targetURL, keepScreenAwake: $keepScreenAwake)
@@ -60,8 +182,118 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Voice Input Modal
+struct VoiceInputModal: View {
+    @ObservedObject var voiceManager: VoiceSpeechManager
+    @Environment(\.presentationMode) var presentationMode
+    var onSendText: (String) -> Void
+    @State private var localText = ""
+    
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 24) {
+                Spacer()
+                
+                // Animated Pulsing Mic
+                ZStack {
+                    Circle()
+                        .fill(Color.blue.opacity(0.15))
+                        .frame(width: voiceManager.isRecording ? 140 : 100, height: voiceManager.isRecording ? 140 : 100)
+                        .animation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true), value: voiceManager.isRecording)
+                    
+                    Circle()
+                        .fill(voiceManager.isRecording ? Color.red : Color.blue)
+                        .frame(width: 80, height: 80)
+                        .shadow(radius: 8)
+                    
+                    Image(systemName: voiceManager.isRecording ? "stop.fill" : "mic.fill")
+                        .font(.system(size: 32, weight: .bold))
+                        .foregroundColor(.white)
+                }
+                .onTapGesture {
+                    let generator = UIImpactFeedbackGenerator(style: .medium)
+                    generator.impactOccurred()
+                    if voiceManager.isRecording {
+                        voiceManager.stopSpeechToText()
+                    } else {
+                        voiceManager.recognizedText = ""
+                        voiceManager.startSpeechToText { text in
+                            localText = text
+                        }
+                    }
+                }
+                
+                Text(voiceManager.isRecording ? "Đang lắng nghe... Chạm để dừng" : "Chạm vào Micro để bắt đầu nói")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                
+                // Live Spoken Text Preview
+                ScrollView {
+                    Text(localText.isEmpty ? (voiceManager.isRecording ? "Hãy nói câu lệnh của bạn..." : "Văn bản nhận diện giọng nói sẽ hiển thị tại đây.") : localText)
+                        .font(.system(size: 18, weight: .medium))
+                        .padding()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color(UIColor.secondarySystemBackground))
+                        .cornerRadius(12)
+                }
+                .frame(maxHeight: 180)
+                .padding(.horizontal)
+                
+                // Action buttons
+                HStack(spacing: 16) {
+                    Button(action: {
+                        voiceManager.stopSpeechToText()
+                        localText = ""
+                    }) {
+                        Text("Xóa")
+                            .frame(maxWidth: .infinity)
+                            .padding()
+                            .background(Color(UIColor.tertiarySystemBackground))
+                            .cornerRadius(10)
+                    }
+                    
+                    Button(action: {
+                        voiceManager.stopSpeechToText()
+                        if !localText.isEmpty {
+                            onSendText(localText)
+                        }
+                        presentationMode.wrappedValue.dismiss()
+                    }) {
+                        HStack {
+                            Image(systemName: "paperplane.fill")
+                            Text("Gửi vào Antigravity")
+                        }
+                        .fontWeight(.bold)
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding()
+                        .background(localText.isEmpty ? Color.gray : Color.blue)
+                        .cornerRadius(10)
+                    }
+                    .disabled(localText.isEmpty)
+                }
+                .padding(.horizontal)
+                .padding(.bottom, 20)
+            }
+            .navigationTitle("Lệnh giọng nói")
+            .navigationBarItems(trailing: Button("Đóng") {
+                voiceManager.stopSpeechToText()
+                presentationMode.wrappedValue.dismiss()
+            })
+            .onAppear {
+                localText = ""
+                voiceManager.startSpeechToText { text in
+                    localText = text
+                }
+            }
+        }
+    }
+}
+
+// MARK: - WebView Container
 struct OptimizedWebView: UIViewRepresentable {
     let urlString: String
+    var onCoordinatorReady: ((Coordinator) -> Void)?
     
     class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         var parent: OptimizedWebView
@@ -77,12 +309,10 @@ struct OptimizedWebView: UIViewRepresentable {
         func setupProgressAndRefresh(on webView: WKWebView) {
             self.webView = webView
             
-            // Native Pull-to-refresh
             refreshControl = UIRefreshControl()
             refreshControl.addTarget(self, action: #selector(handleRefresh), for: .valueChanged)
             webView.scrollView.refreshControl = refreshControl
             
-            // Native slim progress bar at top
             progressView = UIProgressView(progressViewStyle: .default)
             progressView.translatesAutoresizingMaskIntoConstraints = false
             progressView.tintColor = .systemBlue
@@ -118,6 +348,36 @@ struct OptimizedWebView: UIViewRepresentable {
             refreshControl.endRefreshing()
         }
         
+        // Auto-inject Voice Text into Chat input box of Antigravity
+        func injectPromptToChat(_ text: String) {
+            let escapedText = text.replacingOccurrences(of: "\\", with: "\\\\")
+                                  .replacingOccurrences(of: "\"", with: "\\\"")
+                                  .replacingOccurrences(of: "\n", with: "\\n")
+            let js = """
+            (function() {
+                var input = document.querySelector('textarea, [contenteditable="true"], input[type="text"]');
+                if (input) {
+                    if (input.tagName === 'TEXTAREA' || input.tagName === 'INPUT') {
+                        input.value = (input.value ? input.value + ' ' : '') + "\(escapedText)";
+                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                        input.focus();
+                    } else if (input.isContentEditable) {
+                        input.innerText = (input.innerText ? input.innerText + ' ' : '') + "\(escapedText)";
+                        input.dispatchEvent(new Event('input', { bubbles: true }));
+                        input.focus();
+                    }
+                }
+            })();
+            """
+            webView?.evaluateJavaScript(js, completionHandler: nil)
+        }
+        
+        // Request Microphone / Camera permissions inside WebKit
+        @available(iOS 15.0, *)
+        func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType, decisionHandler: @escaping (WKPermissionDecision) -> Void) {
+            decisionHandler(.grant)
+        }
+        
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             let cssInjection = """
             var style = document.createElement('style');
@@ -141,7 +401,11 @@ struct OptimizedWebView: UIViewRepresentable {
     }
     
     func makeCoordinator() -> Coordinator {
-        Coordinator(self)
+        let coord = Coordinator(self)
+        DispatchQueue.main.async {
+            self.onCoordinatorReady?(coord)
+        }
+        return coord
     }
     
     func makeUIView(context: Context) -> WKWebView {
@@ -180,6 +444,7 @@ struct OptimizedWebView: UIViewRepresentable {
     }
 }
 
+// MARK: - Settings View
 struct SettingsView: View {
     @Binding var targetURL: String
     @Binding var keepScreenAwake: Bool
@@ -197,11 +462,11 @@ struct SettingsView: View {
                 }
                 
                 Section(header: Text("Quick Presets")) {
-                    Button(action: { tempURL = "https://antigravity.google.com.com" }) {
+                    Button(action: { tempURL = "https://antigravity.google.com" }) {
                         HStack {
                             Text("Official (antigravity.google.com)")
                             Spacer()
-                            if tempURL == "https://antigravity.google.com.com" {
+                            if tempURL == "https://antigravity.google.com" {
                                 Image(systemName: "checkmark").foregroundColor(.blue)
                             }
                         }
