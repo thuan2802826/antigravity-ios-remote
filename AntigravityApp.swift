@@ -12,7 +12,7 @@ struct AntigravityRemoteApp: App {
 }
 
 struct ContentView: View {
-    @State private var targetURL = "https://antigravity.google"
+    @State private var targetURL = "https://antigravity.google.com.com"
     @State private var isShowingSettings = false
     @State private var keepScreenAwake = true
     
@@ -197,11 +197,11 @@ struct SettingsView: View {
                 }
                 
                 Section(header: Text("Quick Presets")) {
-                    Button(action: { tempURL = "https://antigravity.google" }) {
+                    Button(action: { tempURL = "https://antigravity.google.com.com" }) {
                         HStack {
-                            Text("Official (antigravity.google)")
+                            Text("Official (antigravity.google.com)")
                             Spacer()
-                            if tempURL == "https://antigravity.google" {
+                            if tempURL == "https://antigravity.google.com.com" {
                                 Image(systemName: "checkmark").foregroundColor(.blue)
                             }
                         }
