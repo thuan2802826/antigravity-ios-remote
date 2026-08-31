@@ -1,0 +1,43 @@
+﻿name: Build iOS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode Project
+        run: xcodegen generate
+
+      - name: Build Archive (Unsigned)
+        run: |
+          xcodebuild archive \
+            -project AntigravityRemote.xcodeproj \
+            -scheme AntigravityRemote \
+            -destination "generic/platform=iOS" \
+            -archivePath "build/AntigravityRemote.xcarchive" \
+            CODE_SIGNING_ALLOWED="NO" \
+            CODE_SIGNING_REQUIRED="NO" \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package IPA
+        run: |
+          mkdir -p Payload
+          cp -r build/AntigravityRemote.xcarchive/Products/Applications/AntigravityRemote.app Payload/
+          zip -r AntigravityRemote.ipa Payload
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AntigravityRemote-IPA
+          path: AntigravityRemote.ipa
