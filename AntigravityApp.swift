@@ -54,11 +54,8 @@ struct ContentView: View {
         .onAppear {
             UIApplication.shared.isIdleTimerDisabled = keepScreenAwake
         }
-        .onChange(of: keepScreenAwake) { newValue in
-            UIApplication.shared.isIdleTimerDisabled = newValue
-        }
-        .sheet(isPresented: ) {
-            SettingsView(targetURL: , keepScreenAwake: )
+        .sheet(isPresented: $isShowingSettings) {
+            SettingsView(targetURL: $targetURL, keepScreenAwake: $keepScreenAwake)
         }
     }
 }
@@ -122,10 +119,9 @@ struct OptimizedWebView: UIViewRepresentable {
         }
         
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            // Inject CSS to eliminate 300ms tap delay, optimize ProMotion 120Hz smooth scrolling
             let cssInjection = """
             var style = document.createElement('style');
-            style.innerHTML = 
+            style.innerHTML = `
                 * {
                     -webkit-tap-highlight-color: transparent !important;
                     touch-action: manipulation !important;
@@ -133,7 +129,7 @@ struct OptimizedWebView: UIViewRepresentable {
                 body, html {
                     -webkit-overflow-scrolling: touch !important;
                 }
-            ;
+            `;
             document.head.appendChild(style);
             """
             webView.evaluateJavaScript(cssInjection, completionHandler: nil)
@@ -149,13 +145,11 @@ struct OptimizedWebView: UIViewRepresentable {
     }
     
     func makeUIView(context: Context) -> WKWebView {
-        // High performance configuration
         let configuration = WKWebViewConfiguration()
         configuration.allowsInlineMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
-        configuration.websiteDataStore = WKWebsiteDataStore.default() // Persistent session cookies
+        configuration.websiteDataStore = WKWebsiteDataStore.default()
         
-        // Fast viewport and modern features
         let preferences = WKWebpagePreferences()
         preferences.allowsContentJavaScript = true
         configuration.defaultWebpagePreferences = preferences
@@ -166,7 +160,6 @@ struct OptimizedWebView: UIViewRepresentable {
         webView.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
         webView.allowsBackForwardNavigationGestures = true
         
-        // ScrollView optimizations
         webView.scrollView.bounces = true
         webView.scrollView.alwaysBounceVertical = true
         webView.scrollView.contentInsetAdjustmentBehavior = .scrollableAxes
@@ -197,7 +190,7 @@ struct SettingsView: View {
         NavigationView {
             Form {
                 Section(header: Text("Server Connection")) {
-                    TextField("Server URL", text: )
+                    TextField("Server URL", text: $tempURL)
                         .autocapitalization(.none)
                         .disableAutocorrection(true)
                         .keyboardType(.URL)
@@ -225,7 +218,7 @@ struct SettingsView: View {
                 }
                 
                 Section(header: Text("Display & Experience")) {
-                    Toggle("Keep Screen Awake (No Sleep)", isOn: )
+                    Toggle("Keep Screen Awake (No Sleep)", isOn: $keepScreenAwake)
                 }
             }
             .navigationTitle("App Settings")
@@ -237,6 +230,7 @@ struct SettingsView: View {
                     let generator = UINotificationFeedbackGenerator()
                     generator.notificationOccurred(.success)
                     targetURL = tempURL
+                    UIApplication.shared.isIdleTimerDisabled = keepScreenAwake
                     presentationMode.wrappedValue.dismiss()
                 }
             )
