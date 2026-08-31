@@ -18,8 +18,8 @@ targets:
       path: Info.plist
       properties:
         CFBundleDisplayName: "Antigravity"
-        CFBundleShortVersionString: "1.1.0"
-        CFBundleVersion: "2"
+        CFBundleShortVersionString: "1.2.0"
+        CFBundleVersion: "3"
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -27,7 +27,3 @@ targets:
           - UIInterfaceOrientationLandscapeRight
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
-        NSMicrophoneUsageDescription: "Antigravity cần quyền truy cập Microphone để ghi âm giọng nói và gửi lệnh thoại đến AI."
-        NSSpeechRecognitionUsageDescription: "Cần quyền nhận dạng giọng nói để chuyển lời nói của bạn thành tin nhắn văn bản gửi tới Antigravity."
-        NSCameraUsageDescription: "Cần quyền Camera để chụp và gửi hình ảnh đính kèm cho AI."
-        NSPhotoLibraryUsageDescription: "Cần quyền Thư viện ảnh để tải lên hình ảnh phân tích cho AI."
