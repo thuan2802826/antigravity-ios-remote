@@ -2,6 +2,8 @@
 import WebKit
 import AVFoundation
 import Speech
+import AuthenticationServices
+import SafariServices
 
 @main
 struct AntigravityRemoteApp: App {
@@ -26,16 +28,8 @@ class VoiceSpeechManager: NSObject, ObservableObject, AVAudioRecorderDelegate {
     private let audioEngine = AVAudioEngine()
     
     func requestPermissions() {
-        AVAudioSession.sharedInstance().requestRecordPermission { granted in
-            DispatchQueue.main.async {
-                print("Mic permission: \(granted)")
-            }
-        }
-        SFSpeechRecognizer.requestAuthorization { status in
-            DispatchQueue.main.async {
-                print("Speech recognition status: \(status.rawValue)")
-            }
-        }
+        AVAudioSession.sharedInstance().requestRecordPermission { _ in }
+        SFSpeechRecognizer.requestAuthorization { _ in }
     }
     
     func startSpeechToText(onUpdate: @escaping (String) -> Void) {
@@ -93,9 +87,44 @@ class VoiceSpeechManager: NSObject, ObservableObject, AVAudioRecorderDelegate {
     }
 }
 
+// MARK: - Safari Passkey Login Sheet
+struct SafariPasskeyLoginView: UIViewControllerRepresentable {
+    let url: URL
+    var onDismiss: () -> Void
+    
+    func makeUIViewController(context: Context) -> SFSafariViewController {
+        let config = SFSafariViewController.Configuration()
+        config.entersReaderIfAvailable = false
+        
+        let safariVC = SFSafariViewController(url: url, configuration: config)
+        safariVC.dismissButtonStyle = .done
+        safariVC.delegate = context.coordinator
+        return safariVC
+    }
+    
+    func updateUIViewController(_ uiViewController: SFSafariViewController, context: Context) {}
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    class Coordinator: NSObject, SFSafariViewControllerDelegate {
+        var parent: SafariPasskeyLoginView
+        
+        init(_ parent: SafariPasskeyLoginView) {
+            self.parent = parent
+        }
+        
+        func safariViewControllerDidFinish(_ controller: SFSafariViewController) {
+            parent.onDismiss()
+        }
+    }
+}
+
 struct ContentView: View {
     @State private var targetURL = "https://antigravity.google.com"
     @State private var isShowingSettings = false
+    @State private var isShowingPasskeyLogin = false
     @State private var keepScreenAwake = true
     @StateObject private var voiceManager = VoiceSpeechManager()
     @State private var webViewCoordinator: OptimizedWebView.Coordinator?
@@ -107,11 +136,33 @@ struct ContentView: View {
             })
             .edgesIgnoringSafeArea(.all)
             
-            // Floating Control Bar (Voice Mic + Settings)
+            // Floating Control Bar
             VStack(spacing: 12) {
                 Spacer()
                 HStack(spacing: 12) {
                     Spacer()
+                    
+                    // Passkey / Face ID Login Button (for seamless Google Auth)
+                    Button(action: {
+                        let generator = UIImpactFeedbackGenerator(style: .medium)
+                        generator.impactOccurred()
+                        isShowingPasskeyLogin = true
+                    }) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "faceid")
+                                .font(.system(size: 16, weight: .bold))
+                            Text("Passkey")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                        .foregroundColor(.white)
+                        .padding(.vertical, 12)
+                        .padding(.horizontal, 14)
+                        .background(
+                            Capsule()
+                                .fill(Color.indigo)
+                                .shadow(color: .black.opacity(0.3), radius: 6, x: 0, y: 3)
+                        )
+                    }
                     
                     // Voice Mic Button
                     Button(action: {
@@ -170,6 +221,15 @@ struct ContentView: View {
         .onAppear {
             UIApplication.shared.isIdleTimerDisabled = keepScreenAwake
             voiceManager.requestPermissions()
+        }
+        .sheet(isPresented: $isShowingPasskeyLogin) {
+            if let loginUrl = URL(string: targetURL) {
+                SafariPasskeyLoginView(url: loginUrl) {
+                    isShowingPasskeyLogin = false
+                    // Reload webview to immediately pick up cookies/session
+                    webViewCoordinator?.reload()
+                }
+            }
         }
         .sheet(isPresented: $voiceManager.showVoiceSheet) {
             VoiceInputModal(voiceManager: voiceManager) { spokenText in
@@ -348,7 +408,10 @@ struct OptimizedWebView: UIViewRepresentable {
             refreshControl.endRefreshing()
         }
         
-        // Auto-inject Voice Text into Chat input box of Antigravity
+        func reload() {
+            webView?.reload()
+        }
+        
         func injectPromptToChat(_ text: String) {
             let escapedText = text.replacingOccurrences(of: "\\", with: "\\\\")
                                   .replacingOccurrences(of: "\"", with: "\\\"")
@@ -372,7 +435,6 @@ struct OptimizedWebView: UIViewRepresentable {
             webView?.evaluateJavaScript(js, completionHandler: nil)
         }
         
-        // Request Microphone / Camera permissions inside WebKit
         @available(iOS 15.0, *)
         func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType, decisionHandler: @escaping (WKPermissionDecision) -> Void) {
             decisionHandler(.grant)
